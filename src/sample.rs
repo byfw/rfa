@@ -3,15 +3,17 @@ use std::io;
 use std::io::prelude::*;
 use std::fs::File;
 use std::path::Path;
+use std::fmt::Write;
 use serde::{Deserialize, Serialize};
 use infer;
 
+const BUFFER_SIZE: usize = 10240;
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SampleFile {
     pub hash: String, // really this is a Sha256
     file_stem: String,
     extension: String,
-    pub results: String,
+    pub mime: String,
 }
 
 impl SampleFile {
@@ -30,29 +32,48 @@ impl SampleFile {
         Ok(())
     }
 
-    fn sha256sum(path: &Path) -> String {
-        let mut file = match File::open(&path) {
+    fn sha256sum<D: Digest + Default, R: Read>(reader: &mut R) -> String { // Taken from RustCrypto examples
+        let mut sh = D::default();
+        let mut buffer = [0u8; BUFFER_SIZE];
+        loop {
+            let n = match reader.read(&mut buffer) {
+                Ok(n) => n,
+                Err(_) => panic!("Error in sha256sum"),
+            };
+            sh.update(&buffer[..n]);
+            if n==0 || n < BUFFER_SIZE {
+                break;
+            }
+        }
+        SampleFile::hash_to_string(&sh.finalize())
+    }
+
+    fn hash_to_string(sum: &[u8]) -> String {
+        let mut hash = String::new();
+        for byte in sum.iter() {
+            write!(hash, "{:02x}", byte).unwrap();
+        }
+        println!("{}", hash);
+        hash
+    }
+
+   fn infer_mime(path:&Path) -> String {
+        let infer_mime = infer::get_from_path(&path).expect("error reading");
+        let mime = match infer_mime {
+            Some(_x) => infer_mime.unwrap().to_string(),
+            None => String::from("N/A"),
+        };
+        mime 
+    }
+
+    fn open_file(path: &Path) -> File {
+        let file = match File::open(&path) {
             Err(why) =>
                 panic!("Couldn't open {:?}: {}", path.display(), why), // If we can't open it, panic and say why
             Ok(file) => 
                 file, // else, open the file
         };
-        let mut buffer = Vec::new();
-        match file.read_to_end(&mut buffer) { // read the entirety of the file into a vector of bytes (unsigned 8-bit integers: or u8)
-            Err(why) => panic!("File was opened, but could not be read: {}", why),
-            Ok(buffer) => buffer,
-        };
-        let hash: String = format!("{:x}", Sha256::digest(&buffer));
-        hash
-    }
-
-    fn infer_mime(path:&Path) -> String {
-        let infer_mime = infer::get_from_path(&path).expect("error reading");
-        let results = match infer_mime {
-            Some(_x) => infer_mime.unwrap().to_string(),
-            None => String::from("N/A"),
-        };
-        results
+    file
     }
 
     fn catalog_file(path: &Path) {
@@ -63,9 +84,10 @@ impl SampleFile {
         // when we convert from the OS's format to UTF-8 (All strings in rust must be valid UTF-8).
         let file_stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string(); // filename w/o extension
         let extension = path.extension().unwrap_or_default().to_string_lossy().to_lowercase().to_string(); 
-        let hash = SampleFile::sha256sum(&path);
-        let results = SampleFile::infer_mime(&path);
-        let sample = SampleFile { hash, file_stem, extension, results };
+//        let hash = SampleFile::sha256sum(&path);
+        let hash = SampleFile::sha256sum::<Sha256, _>(&mut SampleFile::open_file(&path));
+        let mime = SampleFile::infer_mime(&path);
+        let sample = SampleFile { hash, file_stem, extension, mime };
         super::json::serialize(&sample).expect("Failed to serialize");
     }
 
@@ -75,8 +97,8 @@ impl SampleFile {
         } else {
             println!("\n[ {}.{} ] - SHA256SUM: {}", self.file_stem, self.extension, self.hash);
         }
-        if !self.results.is_empty() {
-            println!("RESULTS: {}", self.results);
+        if !self.mime.is_empty() {
+            println!("RESULTS: {}", self.mime);
         }
     }
 
