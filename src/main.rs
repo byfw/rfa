@@ -18,7 +18,7 @@ fn main() {
             match choice {
                 "1" => { send_to_scanner(&mut argin) }, // JSON // Really this doesn't need to be &mut, but its to match the stdin method. 
                 "2" => { println!("CSV Mode is currently unimplemented") }, // CSV
-                 _  => { println!("Goodbye!") }
+                 _  => { println!("Exiting...") }
             }
         },
         3 => {

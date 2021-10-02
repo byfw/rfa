@@ -1,10 +1,10 @@
-use sha256::{digest_bytes};
+use sha2::{Sha256, Digest};
 use std::io;
 use std::io::prelude::*;
 use std::fs::File;
 use std::path::Path;
 use serde::{Deserialize, Serialize};
-
+use infer;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct SampleFile {
@@ -13,51 +13,63 @@ pub struct SampleFile {
     extension: String,
     pub results: String,
 }
-    
+
 impl SampleFile {
-    pub fn load_sample(path: &Path) -> io::Result<()>{ // str is an unsized String prim (string slice)
+    pub fn load_sample(path: &Path) -> io::Result<()>{
         match path.is_dir() {
-            false => SampleFile::catalog_file(&path),   // false: is not a dir, assume its a file.
-            true =>                                     // true: for every file in dir, try to catalog every file.
+            false =>    
+                SampleFile::catalog_file(&path),
+            true => 
                 for f in path.read_dir().expect("Error reading contents of directory") {
                     if let Ok(f) = f { 
-                        SampleFile::load_sample(&f.path())?; // Reads folders recursively until we get a file. 
+                        SampleFile::load_sample(&f.path())?; // Reads folders recursively until we get a file.
+                        // TODO Maybe make sure this doesn't cause a stack overflow
                     } 
                 },
         };
         Ok(())
     }
 
-    fn catalog_file(path: &Path) { // str is an unsized String prim (string slice)
-        // This looks hairy so let me explain: 
-        // By default, these path variables are OsStrs, variable length, OS-sensitive string slices
-        // unwrap_or_default(): removes the Option (Rust's way to avoid null values, there can be Some or None data)
-        // to_string_lossy(): converts the OsStr to a Cow (Copy-On-Write smart pointer), 'lossy' meaning we might lose data
-        // when we convert from the OS's format to UTF-8 (All strings in rust must be valid UTF-8).
-        let file_stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string(); // filename w/o extension
-        let extension = path.extension().unwrap_or_default().to_string_lossy().to_string(); 
-        let info = SampleFile::read_buffer(&path); // Get info and the scan results as a tuple, info.0 is the has, info.1 is results
-        let sample = SampleFile { hash: info.0, file_stem, extension, results: info.1 };  
-        super::json::serialize(&sample).expect("Failed to serialize");
-    }
-
-    fn read_buffer(path: &Path) -> (String, String) { 
-        let mut file = match File::open(&path) { // Attempt to load the file by its path
-            Err(why) => panic!("Couldn't open {:?}: {}", path.display(), why), // If we can't open it, panic and say why
-            Ok(file) => file, // else, open the file
+    fn sha256sum(path: &Path) -> String {
+        let mut file = match File::open(&path) {
+            Err(why) =>
+                panic!("Couldn't open {:?}: {}", path.display(), why), // If we can't open it, panic and say why
+            Ok(file) => 
+                file, // else, open the file
         };
         let mut buffer = Vec::new();
         match file.read_to_end(&mut buffer) { // read the entirety of the file into a vector of bytes (unsigned 8-bit integers: or u8)
             Err(why) => panic!("File was opened, but could not be read: {}", why),
             Ok(buffer) => buffer,
         };
-
-        let hash = digest_bytes(&buffer);           // use the sha256 library to hash the file, outputs a String
-        let results = super::scan::scanner(buffer); // consume the buffer vec
-        (hash, results)                             // return sha2 and any scan results to build the struct
+        let hash: String = format!("{:x}", Sha256::digest(&buffer));
+        hash
     }
 
-    pub fn print(&self) {           // Make a print method for our struct so it can be called like sample.print()
+    fn infer_mime(path:&Path) -> String {
+        let infer_mime = infer::get_from_path(&path).expect("error reading");
+        let results = match infer_mime {
+            Some(_x) => infer_mime.unwrap().to_string(),
+            None => String::from("N/A"),
+        };
+        results
+    }
+
+    fn catalog_file(path: &Path) {
+        // This looks hairy so let me explain: 
+        // By default, these path variables are OsStrs, variable length, OS-sensitive string slices
+        // unwrap_or_default(): removes the Option (Rust's way to avoid null values, there can be Some or None data)
+        // to_string_lossy(): converts the OsStr to a Cow (Copy-On-Write smart pointer), 'lossy' meaning we might lose data
+        // when we convert from the OS's format to UTF-8 (All strings in rust must be valid UTF-8).
+        let file_stem = path.file_stem().unwrap_or_default().to_string_lossy().to_string(); // filename w/o extension
+        let extension = path.extension().unwrap_or_default().to_string_lossy().to_lowercase().to_string(); 
+        let hash = SampleFile::sha256sum(&path);
+        let results = SampleFile::infer_mime(&path);
+        let sample = SampleFile { hash, file_stem, extension, results };
+        super::json::serialize(&sample).expect("Failed to serialize");
+    }
+
+   pub fn print(&self) {           // Make a print method for our struct so it can be called like sample.print()
         if self.extension == "" {   // No extension, don't print the .
             println!("\n[ {} ] SHA256SUM: {}", self.file_stem, self.hash);
         } else {
